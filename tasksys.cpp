@@ -1,16 +1,24 @@
+// tasksys.cpp  (FULL FIXED)
 #include "tasksys.h"
-#include <cmath> // sin/cos ашигладаг бол хэрэгтэй
+
+#include <algorithm>   // std::min, std::max
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 IRunnable::~IRunnable() {}
 
-ITaskSystem::ITaskSystem(int num_threads) {}
+ITaskSystem::ITaskSystem(int /*num_threads*/) {}
 ITaskSystem::~ITaskSystem() {}
 
 /*
  * ================================================================
- * Serial task system
+ * Serial task system implementation
  * ================================================================
  */
+
 const char *TaskSystemSerial::name() { return "Serial"; }
 
 TaskSystemSerial::TaskSystemSerial(int num_threads) : ITaskSystem(num_threads) {}
@@ -22,76 +30,114 @@ void TaskSystemSerial::run(IRunnable *runnable, int num_total_tasks) {
     }
 }
 
-TaskID TaskSystemSerial::runAsyncWithDeps(IRunnable *, int, const std::vector<TaskID> &) { return 0; }
-void TaskSystemSerial::sync() { return; }
+TaskID TaskSystemSerial::runAsyncWithDeps(IRunnable * /*runnable*/, int /*num_total_tasks*/,
+                                          const std::vector<TaskID> & /*deps*/) {
+    // Not required for this lab
+    return 0;
+}
+
+void TaskSystemSerial::sync() {
+    // Not required for this lab
+}
 
 /*
  * ================================================================
- * Parallel + Always Spawn (Part A)
+ * Parallel Spawn task system implementation
  * ================================================================
  */
+
 const char *TaskSystemParallelSpawn::name() { return "Parallel + Always Spawn"; }
 
 TaskSystemParallelSpawn::TaskSystemParallelSpawn(int num_threads)
-    : ITaskSystem(num_threads), nthreads(num_threads) {}
+    : ITaskSystem(num_threads), nthreads(std::max(1, num_threads)) {}
 
 TaskSystemParallelSpawn::~TaskSystemParallelSpawn() {}
 
 void TaskSystemParallelSpawn::run(IRunnable *runnable, int num_total_tasks) {
-    if (num_total_tasks <= 0) return;
-
     int T = std::max(1, nthreads);
-    int num_workers = std::min(T, num_total_tasks);
+    int N = num_total_tasks;
+    if (N <= 0) return;
 
-    std::atomic<int> next{0};
-    std::vector<std::thread> threads;
-    threads.reserve(num_workers);
+    std::vector<std::thread> th;
+    th.reserve(T);
 
-    auto worker = [&]() {
-        while (true) {
-            int tid = next.fetch_add(1);
-            if (tid >= num_total_tasks) break;
-            runnable->runTask(tid, num_total_tasks);
-        }
-    };
+    int chunk = (N + T - 1) / T; // static scheduling
 
-    for (int i = 0; i < num_workers; i++) threads.emplace_back(worker);
-    for (auto &th : threads) th.join();
+    for (int t = 0; t < T; t++) {
+        int start = t * chunk;
+        int end = std::min(N, start + chunk);
+
+        th.emplace_back([=]() {
+            for (int i = start; i < end; i++) {
+                runnable->runTask(i, N);
+            }
+        });
+    }
+
+    for (auto &x : th) x.join();
 }
 
-TaskID TaskSystemParallelSpawn::runAsyncWithDeps(IRunnable *, int, const std::vector<TaskID> &) { return 0; }
-void TaskSystemParallelSpawn::sync() { return; }
+TaskID TaskSystemParallelSpawn::runAsyncWithDeps(IRunnable * /*runnable*/, int /*num_total_tasks*/,
+                                                 const std::vector<TaskID> & /*deps*/) {
+    // Not required for this lab
+    return 0;
+}
+
+void TaskSystemParallelSpawn::sync() {
+    // Not required for this lab
+}
 
 /*
  * ================================================================
- * Parallel + Thread Pool + Spin (Part A)
+ * Parallel Thread Pool Spinning task system implementation
  * ================================================================
  */
-const char *TaskSystemParallelThreadPoolSpinning::name() { return "Parallel + Thread Pool + Spin"; }
+
+const char *TaskSystemParallelThreadPoolSpinning::name() {
+    return "Parallel + Thread Pool + Spin";
+}
 
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads)
     : ITaskSystem(num_threads), nthreads(std::max(1, num_threads)) {
 
     workers.reserve(nthreads);
-    for (int i = 0; i < nthreads; i++) {
+
+    for (int t = 0; t < nthreads; t++) {
         workers.emplace_back([this]() {
-            while (!shutdown.load(std::memory_order_acquire)) {
-                if (!has_work.load(std::memory_order_acquire)) {
-                    // spin: жижиг pause өгч CPU-г арай бага идүүлэх боломжтой
+            while (!stop.load(std::memory_order_relaxed)) {
+
+                // Busy wait for work
+                if (!work_available.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                     continue;
                 }
 
-                while (true) {
-                    int t = next_task.fetch_add(1);
-                    if (t >= cur_total) break;
-                    cur_runnable->runTask(t, cur_total);
-                    done_tasks.fetch_add(1);
+                int task = -1;
+                IRunnable *r = nullptr;
+                int N = 0;
+
+                {
+                    std::lock_guard<std::mutex> lk(m);
+                    r = cur;
+                    N = total;
+                    if (next_task < total) {
+                        task = next_task++;
+                    }
                 }
 
-                // worker бүх task дууссан эсэхийг шалгаад ажлыг унтраана
-                if (done_tasks.load() >= cur_total) {
-                    has_work.store(false, std::memory_order_release);
+                if (task == -1) {
+                    // no task left (but others might still run)
+                    std::this_thread::yield();
+                    continue;
+                }
+
+                r->runTask(task, N);
+
+                int fin = completed.fetch_add(1) + 1;
+                if (fin == N) {
+                    // last task finishes: signal master
+                    work_available.store(false, std::memory_order_release);
+                    cv_done.notify_one();
                 }
             }
         });
@@ -99,75 +145,88 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
-    shutdown.store(true, std::memory_order_release);
-    has_work.store(true, std::memory_order_release); // унтаж байвал биш spin байгаа ч exit-д тусална
-    for (auto &th : workers) th.join();
+    stop.store(true);
+    work_available.store(true); // let workers exit spin loop
+    for (auto &t : workers) t.join();
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable *runnable, int num_total_tasks) {
     if (num_total_tasks <= 0) return;
 
-    cur_runnable = runnable;
-    cur_total = num_total_tasks;
-    next_task.store(0);
-    done_tasks.store(0);
-
-    has_work.store(true, std::memory_order_release);
-
-    // main thread өөрөө ч бас ажиллаж болно (optional)
-    while (true) {
-        int t = next_task.fetch_add(1);
-        if (t >= cur_total) break;
-        cur_runnable->runTask(t, cur_total);
-        done_tasks.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lk(m);
+        cur = runnable;
+        total = num_total_tasks;
+        next_task = 0;
+        completed.store(0);
     }
 
-    // бүх task дуусахыг хүлээнэ
-    while (done_tasks.load() < cur_total) {
-        std::this_thread::yield();
-    }
-    has_work.store(false, std::memory_order_release);
+    work_available.store(true, std::memory_order_release);
+
+    // Master waits for completion
+    std::unique_lock<std::mutex> lk(m);
+    cv_done.wait(lk, [&]() { return completed.load() == num_total_tasks; });
 }
 
-TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable *, int, const std::vector<TaskID> &) { return 0; }
-void TaskSystemParallelThreadPoolSpinning::sync() { return; }
+TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable * /*runnable*/, int /*num_total_tasks*/,
+                                                              const std::vector<TaskID> & /*deps*/) {
+    // Not required for this lab
+    return 0;
+}
+
+void TaskSystemParallelThreadPoolSpinning::sync() {
+    // Not required for this lab
+}
 
 /*
  * ================================================================
- * Parallel + Thread Pool + Sleep (Part A)
+ * Parallel Thread Pool Sleeping task system implementation
  * ================================================================
  */
-const char *TaskSystemParallelThreadPoolSleeping::name() { return "Parallel + Thread Pool + Sleep"; }
+
+const char *TaskSystemParallelThreadPoolSleeping::name() {
+    return "Parallel + Thread Pool + Sleep";
+}
 
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads)
     : ITaskSystem(num_threads), nthreads(std::max(1, num_threads)) {
 
     workers.reserve(nthreads);
-    for (int i = 0; i < nthreads; i++) {
+
+    for (int t = 0; t < nthreads; t++) {
         workers.emplace_back([this]() {
             while (true) {
-                // ажил иртэл унтана
-                std::unique_lock<std::mutex> lk(m);
-                cv_work.wait(lk, [&] { return has_work || shutdown.load(); });
-                if (shutdown.load()) return;
+                int task = -1;
+                IRunnable *r = nullptr;
+                int N = 0;
 
-                // local copy
-                IRunnable* r = cur_runnable;
-                int total = cur_total;
-                lk.unlock();
+                {
+                    std::unique_lock<std::mutex> lk(m);
 
-                // ажиллана
-                while (true) {
-                    int t = next_task.fetch_add(1);
-                    if (t >= total) break;
-                    r->runTask(t, total);
-                    int finished = done_tasks.fetch_add(1) + 1;
+                    // Sleep until there is work or stop
+                    cv_work.wait(lk, [&]() { return stop || work_available; });
+                    if (stop) return;
 
-                    // хамгийн сүүлчийн task дуусвал main-г сэрээнэ
-                    if (finished == total) {
-                        std::lock_guard<std::mutex> g(m);
-                        has_work = false;
-                        cv_done.notify_one();
+                    r = cur;
+                    N = total;
+
+                    if (next_task < total) {
+                        task = next_task++;
+                    } else {
+                        // no work right now, loop back to wait
+                        continue;
+                    }
+                }
+
+                // execute outside lock
+                r->runTask(task, N);
+
+                {
+                    std::lock_guard<std::mutex> lk(m);
+                    completed++;
+                    if (completed == total) {
+                        work_available = false;
+                        cv_done.notify_one(); // wake master
                     }
                 }
             }
@@ -178,11 +237,11 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     {
         std::lock_guard<std::mutex> lk(m);
-        shutdown.store(true);
-        has_work = true;
+        stop = true;
+        work_available = true; // wake workers so they can exit
     }
     cv_work.notify_all();
-    for (auto &th : workers) th.join();
+    for (auto &t : workers) t.join();
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable *runnable, int num_total_tasks) {
@@ -190,31 +249,27 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable *runnable, int num_tota
 
     {
         std::lock_guard<std::mutex> lk(m);
-        cur_runnable = runnable;
-        cur_total = num_total_tasks;
-        next_task.store(0);
-        done_tasks.store(0);
-        has_work = true;
+        cur = runnable;
+        total = num_total_tasks;
+        next_task = 0;
+        completed = 0;
+        work_available = true;
     }
+
+    // Wake up all workers
     cv_work.notify_all();
 
-    // main thread өөрөө ч бас ажиллаж болно (optional)
-    while (true) {
-        int t = next_task.fetch_add(1);
-        if (t >= num_total_tasks) break;
-        runnable->runTask(t, num_total_tasks);
-        int finished = done_tasks.fetch_add(1) + 1;
-        if (finished == num_total_tasks) {
-            std::lock_guard<std::mutex> lk(m);
-            has_work = false;
-            cv_done.notify_one();
-        }
-    }
-
-    // бүх task дуусахыг хүлээнэ
+    // Master waits for completion
     std::unique_lock<std::mutex> lk(m);
-    cv_done.wait(lk, [&] { return done_tasks.load() >= num_total_tasks; });
+    cv_done.wait(lk, [&]() { return completed == total; });
 }
 
-TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable *, int, const std::vector<TaskID> &) { return 0; }
-void TaskSystemParallelThreadPoolSleeping::sync() { return; }
+TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable * /*runnable*/, int /*num_total_tasks*/,
+                                                              const std::vector<TaskID> & /*deps*/) {
+    // Part B (not required here)
+    return 0;
+}
+
+void TaskSystemParallelThreadPoolSleeping::sync() {
+    // Part B (not required here)
+}
