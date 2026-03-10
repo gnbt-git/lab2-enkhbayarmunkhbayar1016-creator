@@ -1,6 +1,6 @@
 import re
-import subprocess
 from pathlib import Path
+import subprocess
 import matplotlib.pyplot as plt
 
 MAX_T = 15
@@ -31,34 +31,7 @@ def get_lscpu_info():
 
     return info
 
-def detect_power_now():
-    # 1 = AC plugged-in, 0 = battery (зарим ноут дээр нэр өөр байж болно)
-    candidates = [
-        "/sys/class/power_supply/AC/online",
-        "/sys/class/power_supply/ACAD/online",
-        "/sys/class/power_supply/Mains/online",
-    ]
-    for p in candidates:
-        try:
-            v = Path(p).read_text().strip()
-            if v == "1":
-                return "Plugged-in"
-            if v == "0":
-                return "Battery"
-        except Exception:
-            pass
-    return "Unknown"
-
-def read_bench_csv(path: str):
-    """
-    Expected C++ output format:
-    N=512
-    t_seq=...
-    threads,t_thread,t_openmp
-    1,....
-    2,....
-    ...
-    """
+def read_single_csv(path):
     lines = Path(path).read_text(encoding="utf-8", errors="ignore").strip().splitlines()
 
     N = None
@@ -81,133 +54,117 @@ def read_bench_csv(path: str):
         if line.lower().startswith("threads,"):
             continue
 
-        m = re.match(r"^\s*(\d+)\s*,\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*$", line)
+        m = re.match(
+            r"^\s*(\d+)\s*,\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*,\s*([0-9]*\.?[0-9]+)\s*$",
+            line
+        )
         if m:
             T = int(m.group(1))
-            t_thr = float(m.group(2))
-            t_omp = float(m.group(3))
-            if 1 <= T <= MAX_T:
-                rows.append((T, t_thr, t_omp))
+            t_val = float(m.group(2))
+            speed = float(m.group(3))
+            eff = float(m.group(4))
+            rows.append((T, t_val, speed, eff))
 
     if N is None or t_seq is None:
-        raise ValueError(f"{path} файлд N=... эсвэл t_seq=... мөр байхгүй байна.")
-
-    rows.sort(key=lambda x: x[0])
-
-    if len(rows) == 0:
-        raise ValueError(f"{path} файлд thread мөрүүд уншигдсангүй. (1, t_thread, t_openmp) формат шалга)")
-
-    if len(rows) < MAX_T:
-        print(f"⚠️ Анхаар: {path} дотор 1..{MAX_T} бүх мөр байхгүй байна. Олдсон: {len(rows)}")
+        raise ValueError(f"{path} файлд N=... эсвэл t_seq=... байхгүй байна.")
 
     return N, t_seq, rows
 
-def speedup(tseq, tpar):
-    return tseq / tpar
+def print_separator():
+    print("-" * 80)
 
-def efficiency(sp, T):
-    return sp / T
+def print_table(title, headers, rows):
+    print(f"\n{title}")
+    print_separator()
+    print(f"{headers[0]:<10}{headers[1]:<16}{headers[2]:<16}{headers[3]:<16}")
+    print_separator()
+    for r in rows:
+        print(f"{r[0]:<10}{r[1]:<16}{r[2]:<16}{r[3]:<16}")
+    print_separator()
 
-def annotate(ax, lscpu, N, power_note):
+def annotate(ax, lscpu, N):
     text = (
         f"CPU: {lscpu['Model name']}\n"
         f"CPU(s): {lscpu['CPU(s)']} | Cores/socket: {lscpu['Core(s) per socket']} | Threads/core: {lscpu['Thread(s) per core']}\n"
         f"L1d: {lscpu['L1d cache']} | L1i: {lscpu['L1i cache']}\n"
         f"L2: {lscpu['L2 cache']} | L3: {lscpu['L3 cache']}\n"
-        f"N (matrix size): {N}\n"
-        f"Power: {power_note}"
+        f"N: {N}"
     )
-    ax.text(
-        0.02, -0.34, text,
-        transform=ax.transAxes,
-        ha="left", va="top", fontsize=9
-    )
+    ax.text(0.02, -0.34, text, transform=ax.transAxes, ha="left", va="top", fontsize=9)
 
 def main():
-    # ---- Read system info once
     lscpu = get_lscpu_info()
 
-    # ---- Read benchmark data
-    N_ac, t_seq_ac, rows_ac = read_bench_csv("bench_ac.csv")
-    N_ba, t_seq_ba, rows_ba = read_bench_csv("bench_battery.csv")
+    N1, t_seq_thr_ac, rows_thr_ac = read_single_csv("thread_ac.csv")
+    N2, t_seq_omp_ac, rows_omp_ac = read_single_csv("openmp_ac.csv")
+    N3, t_seq_thr_ba, rows_thr_ba = read_single_csv("thread_battery.csv")
+    N4, t_seq_omp_ba, rows_omp_ba = read_single_csv("openmp_battery.csv")
 
-    # assume same N
-    N = N_ac
+    print_table(
+        "THREAD PLUGGED-IN",
+        ["T", "time", "speedup", "efficiency"],
+        [[T, f"{t:.6f}", f"{s:.6f}", f"{e:.6f}"] for T, t, s, e in rows_thr_ac]
+    )
 
-    # Extract lists
-    T_ac = [r[0] for r in rows_ac]
-    t_thr_ac = [r[1] for r in rows_ac]
-    t_omp_ac = [r[2] for r in rows_ac]
+    print_table(
+        "OPENMP PLUGGED-IN",
+        ["T", "time", "speedup", "efficiency"],
+        [[T, f"{t:.6f}", f"{s:.6f}", f"{e:.6f}"] for T, t, s, e in rows_omp_ac]
+    )
 
-    T_ba = [r[0] for r in rows_ba]
-    t_thr_ba = [r[1] for r in rows_ba]
-    t_omp_ba = [r[2] for r in rows_ba]
+    print_table(
+        "THREAD BATTERY",
+        ["T", "time", "speedup", "efficiency"],
+        [[T, f"{t:.6f}", f"{s:.6f}", f"{e:.6f}"] for T, t, s, e in rows_thr_ba]
+    )
 
-    # Compute speedups
-    sp_thr_ac = [speedup(t_seq_ac, t) for t in t_thr_ac]
-    sp_omp_ac = [speedup(t_seq_ac, t) for t in t_omp_ac]
+    print_table(
+        "OPENMP BATTERY",
+        ["T", "time", "speedup", "efficiency"],
+        [[T, f"{t:.6f}", f"{s:.6f}", f"{e:.6f}"] for T, t, s, e in rows_omp_ba]
+    )
 
-    sp_thr_ba = [speedup(t_seq_ba, t) for t in t_thr_ba]
-    sp_omp_ba = [speedup(t_seq_ba, t) for t in t_omp_ba]
-
-    # Compute efficiencies
-    eff_thr_ac = [efficiency(sp, T) for sp, T in zip(sp_thr_ac, T_ac)]
-    eff_omp_ac = [efficiency(sp, T) for sp, T in zip(sp_omp_ac, T_ac)]
-
-    eff_thr_ba = [efficiency(sp, T) for sp, T in zip(sp_thr_ba, T_ba)]
-    eff_omp_ba = [efficiency(sp, T) for sp, T in zip(sp_omp_ba, T_ba)]
-
-    # Power note shown on graph (we label the data, not current state)
-    power_note = "Battery vs Plugged-in"
-
-    # =========================
-    # 1) SPEEDUP graph
-    # =========================
+    # Speedup graph
     fig, ax = plt.subplots(figsize=(11, 5.5))
 
-    ax.plot(T_ba, sp_thr_ba, marker="o", linestyle="--", label="threads (Battery)")
-    ax.plot(T_ba, sp_omp_ba, marker="o", linestyle=":",  label="OpenMP (Battery)")
+    ax.plot([r[0] for r in rows_thr_ac], [r[2] for r in rows_thr_ac], marker="o", label="Thread Plugged-in")
+    ax.plot([r[0] for r in rows_omp_ac], [r[2] for r in rows_omp_ac], marker="o", label="OpenMP Plugged-in")
+    ax.plot([r[0] for r in rows_thr_ba], [r[2] for r in rows_thr_ba], marker="o", linestyle="--", label="Thread Battery")
+    ax.plot([r[0] for r in rows_omp_ba], [r[2] for r in rows_omp_ba], marker="o", linestyle="--", label="OpenMP Battery")
 
-    ax.plot(T_ac, sp_thr_ac, marker="o", label="threads (Plugged-in)")
-    ax.plot(T_ac, sp_omp_ac, marker="o", label="OpenMP (Plugged-in)")
-
-    ax.plot([1, MAX_T], [1, MAX_T], linestyle="--", label="Ideal (S=T)")
-
-    ax.set_xlabel("Threads (1–15)")
-    ax.set_ylabel("Speedup (T1 / Tn)")
-    ax.set_title("matmul: Speedup (Battery vs Plugged-in)")
+    ax.plot([1, MAX_T], [1, MAX_T], linestyle="--", label="Ideal")
+    ax.set_xlabel("Threads")
+    ax.set_ylabel("Speedup")
+    ax.set_title("Speedup Comparison")
     ax.grid(True)
     ax.legend()
-
-    annotate(ax, lscpu, N, power_note)
+    annotate(ax, lscpu, N1)
     fig.subplots_adjust(bottom=0.35)
-    fig.savefig("speedup_1_15.png", dpi=200)
+    fig.savefig("speedup_compare.png", dpi=200)
 
-    # =========================
-    # 2) EFFICIENCY graph
-    # =========================
+    # Efficiency graph
     fig, ax = plt.subplots(figsize=(11, 5.5))
 
-    ax.plot(T_ba, eff_thr_ba, marker="o", linestyle="--", label="threads (Battery)")
-    ax.plot(T_ba, eff_omp_ba, marker="o", linestyle=":",  label="OpenMP (Battery)")
+    ax.plot([r[0] for r in rows_thr_ac], [r[3] for r in rows_thr_ac], marker="o", label="Thread Plugged-in")
+    ax.plot([r[0] for r in rows_omp_ac], [r[3] for r in rows_omp_ac], marker="o", label="OpenMP Plugged-in")
+    ax.plot([r[0] for r in rows_thr_ba], [r[3] for r in rows_thr_ba], marker="o", linestyle="--", label="Thread Battery")
+    ax.plot([r[0] for r in rows_omp_ba], [r[3] for r in rows_omp_ba], marker="o", linestyle="--", label="OpenMP Battery")
 
-    ax.plot(T_ac, eff_thr_ac, marker="o", label="threads (Plugged-in)")
-    ax.plot(T_ac, eff_omp_ac, marker="o", label="OpenMP (Plugged-in)")
-
-    ax.plot([1, MAX_T], [1, 1], linestyle="--", label="Ideal (E=1)")
-
-    ax.set_xlabel("Threads (1–15)")
+    ax.plot([1, MAX_T], [1, 1], linestyle="--", label="Ideal")
+    ax.set_xlabel("Threads")
     ax.set_ylabel("Efficiency")
-    ax.set_title("matmul: Efficiency (Battery vs Plugged-in)")
+    ax.set_title("Efficiency Comparison")
     ax.grid(True)
     ax.legend()
-
-    annotate(ax, lscpu, N, power_note)
+    annotate(ax, lscpu, N1)
     fig.subplots_adjust(bottom=0.35)
-    fig.savefig("efficiency_1_15.png", dpi=200)
+    fig.savefig("efficiency_compare.png", dpi=200)
 
     plt.show()
-    print("✅ Saved: speedup_1_15.png, efficiency_1_15.png")
+
+    print("\nSaved:")
+    print("- speedup_compare.png")
+    print("- efficiency_compare.png")
 
 if __name__ == "__main__":
     main()
