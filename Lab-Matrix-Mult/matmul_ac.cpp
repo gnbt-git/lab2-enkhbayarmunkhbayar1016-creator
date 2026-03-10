@@ -11,14 +11,6 @@
 using namespace std;
 using namespace chrono;
 
-/*
- =========================================================
-  NxN Matrix Multiplication - BENCHMARK (1..15 threads)
-  Sequential / std::thread / OpenMP
-  B -> Bt (transpose) for better cache locality
- =========================================================
-*/
-
 static void init_matrix(vector<vector<float>>& M, int N) {
     mt19937 gen(42);
     uniform_real_distribution<float> dist(0.0f, 1.0f);
@@ -34,7 +26,7 @@ static void transpose(const vector<vector<float>>& B,
             Bt[j][i] = B[i][j];
 }
 
-// Sequential
+
 static void matmul_seq(const vector<vector<float>>& A,
                        const vector<vector<float>>& Bt,
                        vector<vector<float>>& C, int N) {

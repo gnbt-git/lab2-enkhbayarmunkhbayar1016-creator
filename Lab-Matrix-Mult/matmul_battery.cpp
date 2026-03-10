@@ -11,14 +11,6 @@
 using namespace std;
 using namespace chrono;
 
-/*
- =========================================================
-  NxN Matrix Multiplication - BENCHMARK (1..15 threads)
-  Sequential / std::thread / OpenMP
-  B -> Bt (transpose) for better cache locality
- =========================================================
-*/
-
 static void init_matrix(vector<vector<float>>& M, int N) {
     mt19937 gen(42);
     uniform_real_distribution<float> dist(0.0f, 1.0f);
@@ -34,25 +26,10 @@ static void transpose(const vector<vector<float>>& B,
             Bt[j][i] = B[i][j];
 }
 
-// Sequential
 static void matmul_seq(const vector<vector<float>>& A,
                        const vector<vector<float>>& Bt,
                        vector<vector<float>>& C, int N) {
     for (int i = 0; i < N; i++)
-        for (int j = 0; j < N; j++) {
-            float sum = 0.0f;      // register
-            for (int k = 0; k < N; k++)
-                sum += A[i][k] * Bt[j][k];
-            C[i][j] = sum;
-        }
-}
-
-// Thread worker
-static void worker(int s, int e, int N,
-                   const vector<vector<float>>& A,
-                   const vector<vector<float>>& Bt,
-                   vector<vector<float>>& C) {
-    for (int i = s; i < e; i++)
         for (int j = 0; j < N; j++) {
             float sum = 0.0f;
             for (int k = 0; k < N; k++)
@@ -61,7 +38,20 @@ static void worker(int s, int e, int N,
         }
 }
 
-// std::thread (T threads)
+static void worker(int s, int e, int N,
+                   const vector<vector<float>>& A,
+                   const vector<vector<float>>& Bt,
+                   vector<vector<float>>& C) {
+    for (int i = s; i < e; i++) {
+        for (int j = 0; j < N; j++) {
+            float sum = 0.0f;              // ✅ ЭНЭГҮЙ БОЛ АЖИЛЛАХГҮЙ
+            for (int k = 0; k < N; k++)
+                sum += A[i][k] * Bt[j][k];
+            C[i][j] = sum;
+        }
+    }
+}
+
 static void matmul_thread(const vector<vector<float>>& A,
                           const vector<vector<float>>& Bt,
                           vector<vector<float>>& C,
@@ -70,21 +60,22 @@ static void matmul_thread(const vector<vector<float>>& A,
     th.reserve(T);
 
     int step = N / T;
+    int s = 0;
+
     for (int t = 0; t < T; t++) {
-        int s = t * step;
         int e = (t == T - 1) ? N : (s + step);
         th.emplace_back(worker, s, e, N, cref(A), cref(Bt), ref(C));
+        s = e;
     }
     for (auto& x : th) x.join();
 }
 
-// OpenMP (T threads)
 static void matmul_omp(const vector<vector<float>>& A,
                        const vector<vector<float>>& Bt,
                        vector<vector<float>>& C, int N, int T) {
 #ifdef _OPENMP
     omp_set_num_threads(T);
-#pragma omp parallel for
+#pragma omp parallel for collapse(2)
     for (int i = 0; i < N; i++)
         for (int j = 0; j < N; j++) {
             float sum = 0.0f;
@@ -110,9 +101,8 @@ int main() {
     const int N = 512;
     const int MAX_T = 15;
 
-    cout << "==============================\n";
-    cout << "MODE: RUN THIS ON BATTERY OR AC (YOU CHOOSE)\n";
-    cout << "==============================\n";
+    cout << "N=" << N << "\n";
+    cout << "threads,t_thread,t_openmp\n";
 
     vector<vector<float>> A(N, vector<float>(N));
     vector<vector<float>> B(N, vector<float>(N));
@@ -122,15 +112,6 @@ int main() {
     init_matrix(B, N);
     transpose(B, Bt, N);
 
-    // 1) Sequential baseline (1 удаа)
-    vector<vector<float>> Cseq(N, vector<float>(N));
-    double t_seq = measure([&]() { matmul_seq(A, Bt, Cseq, N); });
-
-    cout << "N=" << N << "\n";
-    cout << "t_seq=" << t_seq << "\n";
-    cout << "threads,t_thread,t_openmp\n";
-
-    // 2) T = 1..15 benchmark
     for (int T = 1; T <= MAX_T; T++) {
         vector<vector<float>> Cthr(N, vector<float>(N));
         vector<vector<float>> Comp(N, vector<float>(N));
@@ -140,6 +121,5 @@ int main() {
 
         cout << T << "," << t_thr << "," << t_omp << "\n";
     }
-
     return 0;
 }
