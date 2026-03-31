@@ -1,9 +1,49 @@
 [
-  {"name": "Serial", "time_ms": 56.103973}
+  {"name": "Serial", "time_ms": 0.980684}
 ,
-  {"name": "Spawn", "time_ms": 14.304622}
+  {"name": "Serial", "time_ms": 0.959142}
 ,
-  {"name": "Spinning", "time_ms": 11.088323}
+  {"name": "Serial", "time_ms": 0.929288}
 ,
-  {"name": "Sleeping", "time_ms": 11.636521}
+  {"name": "Serial", "time_ms": 0.928014}
+,
+  {"name": "Serial", "time_ms": 0.914098}
+,
+  {"name": "Serial", "time_ms": 1.030478, "thread_count": 1}
+,
+  {"name": "Spawn", "time_ms": 0.352865}
+,
+  {"name": "Spawn", "time_ms": 0.282155}
+,
+  {"name": "Spawn", "time_ms": 0.280494}
+,
+  {"name": "Spawn", "time_ms": 0.287486}
+,
+  {"name": "Spawn", "time_ms": 0.346303}
+,
+  {"name": "Spawn", "time_ms": 0.341370, "thread_count": 4}
+,
+  {"name": "Spinning", "time_ms": 28.964906}
+,
+  {"name": "Spinning", "time_ms": 29.410528}
+,
+  {"name": "Spinning", "time_ms": 13.595872}
+,
+  {"name": "Spinning", "time_ms": 11.096027}
+,
+  {"name": "Spinning", "time_ms": 10.081144}
+,
+  {"name": "Spinning", "time_ms": 18.851229, "thread_count": 4}
+,
+  {"name": "Sleeping", "time_ms": 9.772494}
+,
+  {"name": "Sleeping", "time_ms": 9.802731}
+,
+  {"name": "Sleeping", "time_ms": 9.564013}
+,
+  {"name": "Sleeping", "time_ms": 10.011355}
+,
+  {"name": "Sleeping", "time_ms": 9.687343}
+,
+  {"name": "Sleeping", "time_ms": 9.922578, "thread_count": 4, "spin_ms": 18.851229, "sleep_ms": 9.922578}
 ]

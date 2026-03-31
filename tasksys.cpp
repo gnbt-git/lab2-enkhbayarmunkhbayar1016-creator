@@ -141,7 +141,7 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
                 // ✅ FIX: completed update + done check under mutex
                 {
                     std::lock_guard<std::mutex> lk(m);
-                    int fin = ++completed;
+                    int fin = ++completed_count;
                     if (fin == N) {
                         work_available.store(false, std::memory_order_release);
                         cv_done.notify_one();
@@ -171,7 +171,7 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable *runnable, int num_tota
         cur            = runnable;
         total          = num_total_tasks;
         next_task      = 0;
-        completed = 0;
+        completed_count = 0;
         work_available.store(true, std::memory_order_release);
     }
 
@@ -179,7 +179,7 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable *runnable, int num_tota
     {
         std::unique_lock<std::mutex> lk(m);
         cv_done.wait(lk, [&]() {
-            return completed == num_total_tasks;
+            return completed_count == num_total_tasks;
         });
     }
 
